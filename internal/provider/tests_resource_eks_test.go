@@ -4,7 +4,6 @@
 package provider
 
 import (
-	"fmt"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-framework/providerserver"
@@ -15,37 +14,36 @@ import (
 func TestAccTestsResource_EKS(t *testing.T) {
 	repo := "ttl.sh/imagetest" // TODO: Don't push to ttl.sh
 
-	k3sindockerTpl := `
+	resource.Test(t, resource.TestCase{
+		PreCheck: func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: map[string]func() (tfprotov6.ProviderServer, error){
+			"imagetest": providerserver.NewProtocol6WithError(&ImageTestProvider{repo: repo}),
+		},
+		Steps: []resource.TestStep{{Config: `
 resource "imagetest_tests" "foo" {
   name   = "foo"
   driver = "eks_with_eksctl"
 
-  images = {
-    foo = "cgr.dev/chainguard/busybox:latest@sha256:98fa8044785ff59248ec9e5747bff259c6fe4b526ebb77d95d8a98ad958847dd"
+  drivers = {
+    eks_with_eksctl = {
+	  enable_ebs = true
+    }
   }
+
+  images = {}
 
   tests = [
     {
       name    = "sample"
-      image   = "cgr.dev/chainguard/kubectl:latest-dev@sha256:1d8c1f0c437628aafa1bca52c41ff310aea449423cce9b2feae2767ac53c336f"
-      content = [{ source = "${path.module}/testdata/TestAccTestsResource" }]
-      cmd     = "/imagetest/%s"
+	  image   = "cgr.dev/chainguard/helm:latest-dev@sha256:8f39141a214a37997875bba4b77035599bf49fc1cf9b2410411a8b3dacce0ce1"
+      content = [{ source = "${path.module}/testdata/TestAccTestsResource_EKS" }]
+      cmd     = "/imagetest/eks-basic.sh"
     }
   ]
 
   // Creating the cluster takes ~15m... 🐌
   timeout = "30m"
 }
-`
-	resource.Test(t, resource.TestCase{
-		PreCheck: func() { testAccPreCheck(t) },
-		ProtoV6ProviderFactories: map[string]func() (tfprotov6.ProviderServer, error){
-			"imagetest": providerserver.NewProtocol6WithError(&ImageTestProvider{
-				repo: repo,
-			}),
-		},
-		Steps: []resource.TestStep{
-			{Config: fmt.Sprintf(k3sindockerTpl, "k3s-in-docker-basic.sh")},
-		},
-	})
+`,
+		}}})
 }

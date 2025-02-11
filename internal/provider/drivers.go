@@ -11,6 +11,7 @@ import (
 	ekswitheksctl "github.com/chainguard-dev/terraform-provider-imagetest/internal/drivers/eks_with_eksctl"
 	k3sindocker "github.com/chainguard-dev/terraform-provider-imagetest/internal/drivers/k3s_in_docker"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int32default"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
@@ -50,6 +51,8 @@ type DockerInDockerDriverResourceModel struct {
 }
 
 type EKSWithEksctlDriverResourceModel struct {
+	EnableEBS types.Bool  `tfsdk:"enable_ebs"`
+	Nodes     types.Int32 `tfsdk:"nodes"`
 }
 
 func (t TestsResource) LoadDriver(ctx context.Context, drivers *TestsDriversResourceModel, driver DriverResourceModel, id string) (drivers.Tester, error) {
@@ -133,15 +136,15 @@ func (t TestsResource) LoadDriver(ctx context.Context, drivers *TestsDriversReso
 		return dockerindocker.NewDriver(id, opts...)
 
 	case DriverEKSWithEksctl:
-		/*
-			cfg := drivers.EKSWithEksctl
-			if cfg == nil {
-				cfg = &EKSWithEksctlDriverResourceModel{}
-			}
-			opts = append(opts, ekswitheksctl.WithFoo(cfg.Foo.ValueString()))
-		*/
+		cfg := drivers.EKSWithEksctl
+		if cfg == nil {
+			cfg = &EKSWithEksctlDriverResourceModel{}
+		}
 
-		return ekswitheksctl.NewDriver(id)
+		return ekswitheksctl.NewDriver(id,
+			ekswitheksctl.WithEnableEBS(cfg.EnableEBS.ValueBool()),
+			ekswitheksctl.WithNodes(cfg.Nodes.ValueInt32()),
+		)
 	default:
 		return nil, fmt.Errorf("no matching driver: %s", driver)
 	}
@@ -209,8 +212,17 @@ func DriverResourceSchema(ctx context.Context) schema.SingleNestedAttribute {
 			"eks_with_eksctl": schema.SingleNestedAttribute{
 				Description: "The eks_with_eksctl driver",
 				Optional:    true,
-				Attributes:  map[string]schema.Attribute{
-					// TODO: attributes
+				Attributes: map[string]schema.Attribute{
+					"enable_ebs": schema.BoolAttribute{
+						Description: "Enable EBS",
+						Optional:    true,
+					},
+					"nodes": schema.Int32Attribute{
+						Description: "The number of nodes to create",
+						Optional:    true,
+						Default:     int32default.StaticInt32(1),
+						Computed:    true,
+					},
 				},
 			},
 		},

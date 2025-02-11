@@ -20,6 +20,9 @@ import (
 type driver struct {
 	name string
 
+	enableEBS bool
+	nodes     int32
+
 	region      string
 	clusterName string
 	namespace   string
@@ -29,6 +32,20 @@ type driver struct {
 
 type DriverOpts func(*driver) error
 
+func WithEnableEBS(b bool) func(k *driver) error {
+	return func(k *driver) error {
+		k.enableEBS = b
+		return nil
+	}
+}
+
+func WithNodes(n int32) func(k *driver) error {
+	return func(k *driver) error {
+		k.nodes = n
+		return nil
+	}
+}
+
 func NewDriver(n string, opts ...DriverOpts) (drivers.Tester, error) {
 	k := &driver{
 		name:      n,
@@ -36,8 +53,10 @@ func NewDriver(n string, opts ...DriverOpts) (drivers.Tester, error) {
 		namespace: "imagetest",
 	}
 
-	if _, err := exec.LookPath("eksctl"); err != nil {
-		return nil, fmt.Errorf("eksctl not found in $PATH: %w", err)
+	for _, s := range []string{"eksctl", "helm"} {
+		if _, err := exec.LookPath(s); err != nil {
+			return nil, fmt.Errorf("%s not found in $PATH: %w", s, err)
+		}
 	}
 
 	for _, opt := range opts {
@@ -61,6 +80,18 @@ func (k *driver) eksctl(ctx context.Context, args ...string) error {
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("eksctl %v: %v: %s", args, err, out)
+	}
+	return nil
+}
+
+func (k *driver) helm(ctx context.Context, args ...string) error {
+	clog.FromContext(ctx).Infof("helm %v", args)
+	cmd := exec.CommandContext(ctx, "helm", args...)
+	cmd.Env = os.Environ() // Copy the environment
+	cmd.Env = append(cmd.Env, "KUBECONFIG="+k.kubeconfig)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("helm %v: %v: %s", args, err, out)
 	}
 	return nil
 }
@@ -91,14 +122,49 @@ func (k *driver) Setup(ctx context.Context) error {
 	} else {
 		if err := k.eksctl(ctx, "create", "cluster",
 			"--node-private-networking=false",
-			"--vpc-nat-mode=Disable",
+			"--vpc-nat-mode=Disable", // Public nodes don't consume NAT gateways
+			"--with-oidc",            // Needed to support EBS CSI driver
 			"--kubeconfig="+k.kubeconfig,
 			"--name="+k.clusterName,
 		); err != nil {
 			return fmt.Errorf("eksctl create cluster: %w", err)
 		}
 		log.Infof("Created cluster %s", k.clusterName)
+
+		if err := k.helm(ctx, "install", "aws-observability/amazon-cloudwatch-observability",
+			"--repo=https://aws-observability.github.io/helm-charts",
+			"--create-namespace", "--namespace", "amazon-cloudwatch",
+			"--set", "clusterName="+k.clusterName,
+			"--set", "region="+k.region,
+			"--wait", "--timeout", "5m",
+		); err != nil {
+			return fmt.Errorf("helm install amazon-cloudwatch-observability: %w", err)
+		}
+
+		if k.enableEBS {
+			log.Infof("Enabling EBS support...")
+			if err := k.eksctl(ctx, "create", "iamserviceaccount",
+				"--name", "ebs-csi-controller-sa",
+				"--namespace", "kube-system",
+				"--cluster", k.clusterName,
+				"--role-name", "AmazonEKS_EBS_CSI_DriverRole",
+				"--role-only",
+				"--attach-policy-arn", "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy",
+				"--approve",
+			); err != nil {
+				return fmt.Errorf("eksctl create iamserviceaccount: %w", err)
+			}
+			log.Infof("Created iamserviceaccount ebs-csi-controller-sa")
+		}
 	}
+
+	// Make sure we write the kubeconfig.
+	if err := k.eksctl(ctx, "utils", "write-kubeconfig",
+		"--cluster", k.clusterName,
+		"--kubeconfig", k.kubeconfig); err != nil {
+		return fmt.Errorf("eksctl utils write-kubeconfig: %w", err)
+	}
+	log.Infof("Wrote kubeconfig for cluster %s to %s", k.clusterName, k.kubeconfig)
 
 	config, err := clientcmd.BuildConfigFromFlags("", k.kubeconfig)
 	if err != nil {
